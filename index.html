@@ -35,6 +35,7 @@
   <input id="q" placeholder="検索">
   <button id="go">検索</button>
   <button id="key">APIキー設定</button>
+  <button id="prev" style="display:none">← 前の一覧</button>
   <iframe id="player" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe>
   <div id="results"></div>
 </div>
@@ -75,6 +76,8 @@ function calc(s) {
 
 // ===== YouTube =====
 const $ = id => document.getElementById(id);
+let cur = [];      // いま表示している一覧
+let hist = [];     // 前の一覧の履歴
 
 function openViewer() {
   $("calc").style.display = "none";
@@ -100,30 +103,79 @@ function getKey(force) {
 }
 $("key").onclick = () => getKey(true);
 
-async function search() {
+// API呼び出し（共通）
+async function api(path, params) {
   const key = getKey(false);
-  const q = $("q").value.trim();
-  if (!key || !q) return;
-  const url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=12"
-            + "&q=" + encodeURIComponent(q) + "&key=" + encodeURIComponent(key);
-  const res = await fetch(url);
-  const data = await res.json();
-  if (data.error) { alert("APIエラー: " + data.error.message); return; }
-  $("results").innerHTML = "";
-  data.items.forEach(it => {
+  if (!key) throw new Error("APIキーがありません");
+  const url = "https://www.googleapis.com/youtube/v3/" + path + "?" +
+              new URLSearchParams({ ...params, key });
+  const data = await (await fetch(url)).json();
+  if (data.error) throw new Error(data.error.message);
+  return data;
+}
+
+const thumbOf = sn => (sn.thumbnails && (sn.thumbnails.medium || sn.thumbnails.default) || {}).url || "";
+
+// 一覧を表示（push=trueなら今の一覧を履歴に残す）
+function show(items, push) {
+  if (push && cur.length) hist.push(cur);
+  cur = items;
+  $("prev").style.display = hist.length ? "inline-block" : "none";
+  const box = $("results");
+  box.innerHTML = "";
+  items.forEach(it => {
     const d = document.createElement("div");
     d.className = "card";
     const img = document.createElement("img");
-    img.src = it.snippet.thumbnails.medium.url;
+    img.src = it.thumb;
     const t = document.createElement("div");
-    t.textContent = it.snippet.title;   // textContentでXSS対策
+    const label = { video: "", channel: "【チャンネル】", playlist: "【再生リスト】" }[it.kind];
+    t.textContent = label + it.title;   // textContentでXSS対策
     d.append(img, t);
-    d.onclick = () => {
-      $("player").src = "https://www.youtube-nocookie.com/embed/" + it.id.videoId + "?autoplay=1";
-      window.scrollTo(0, 0);
-    };
-    $("results").appendChild(d);
+    d.onclick = () => pick(it);
+    box.appendChild(d);
   });
+}
+$("prev").onclick = () => { if (hist.length) show(hist.pop(), false); };
+
+// クリック時の動作
+async function pick(it) {
+  try {
+    if (it.kind === "video") {
+      $("player").src = "https://www.youtube-nocookie.com/embed/" + it.id + "?autoplay=1";
+      window.scrollTo(0, 0);
+    } else if (it.kind === "playlist") {
+      show(await loadPlaylist(it.id), true);
+    } else if (it.kind === "channel") {
+      const c = await api("channels", { part: "contentDetails", id: it.id });
+      const up = c.items[0].contentDetails.relatedPlaylists.uploads;   // 投稿動画の再生リスト
+      show(await loadPlaylist(up), true);
+    }
+  } catch (e) { alert("エラー: " + e.message); }
+}
+
+// 再生リストの動画を取得（消えた動画・非公開動画は除外）
+async function loadPlaylist(id) {
+  const d = await api("playlistItems", { part: "snippet", playlistId: id, maxResults: 24 });
+  return d.items
+    .filter(x => x.snippet.resourceId && !/^(Private|Deleted) video$/.test(x.snippet.title))
+    .map(x => ({ kind: "video", id: x.snippet.resourceId.videoId, title: x.snippet.title, thumb: thumbOf(x.snippet) }));
+}
+
+// 検索（動画・チャンネル・再生リスト）
+async function search() {
+  const q = $("q").value.trim();
+  if (!q) return;
+  try {
+    const d = await api("search", { part: "snippet", type: "video,channel,playlist", maxResults: 15, q });
+    hist = []; cur = [];
+    show(d.items.map(x => ({
+      kind: x.id.kind.split("#")[1],
+      id: x.id.videoId || x.id.channelId || x.id.playlistId,
+      title: x.snippet.title,
+      thumb: thumbOf(x.snippet)
+    })), false);
+  } catch (e) { alert("APIエラー: " + e.message); }
 }
 $("go").onclick = search;
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") search(); });
