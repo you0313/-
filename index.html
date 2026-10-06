@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>電卓</title>
+<style>
+  body{margin:0;font-family:system-ui,sans-serif;background:#1c1c1e;color:#fff;display:flex;justify-content:center;padding:16px}
+  .wrap{width:100%;max-width:340px}
+  #disp{background:#000;border-radius:12px;padding:20px 14px;text-align:right;font-size:2rem;min-height:2.4rem;overflow-x:auto;margin-bottom:12px;word-break:break-all}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  button{font-size:1.4rem;padding:18px 0;border:0;border-radius:50px;background:#333;color:#fff;cursor:pointer}
+  button.op{background:#ff9f0a}
+  button.fn{background:#a5a5a5;color:#000}
+  #viewer{display:none;width:100%;max-width:960px}
+  #viewer input{padding:10px;width:60%;font-size:1rem}
+  #viewer button{padding:10px 14px;font-size:1rem;border-radius:8px}
+  #player{width:100%;aspect-ratio:16/9;border:0;margin:12px 0;background:#000}
+  #results{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+  .card{cursor:pointer;font-size:.85rem}
+  .card img{width:100%;border-radius:8px}
+</style>
+</head>
+<body>
+
+<!-- 電卓画面 -->
+<div class="wrap" id="calc">
+  <div id="disp">0</div>
+  <div class="grid" id="keys"></div>
+</div>
+
+<!-- YouTube画面（最初は非表示） -->
+<div id="viewer">
+  <button id="back">← 電卓に戻る</button>
+  <input id="q" placeholder="検索">
+  <button id="go">検索</button>
+  <button id="key">APIキー設定</button>
+  <iframe id="player" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe>
+  <div id="results"></div>
+</div>
+
+<script>
+// ===== 設定 =====
+const SECRET = "1234";   // ←この数字を打って「=」を押すとYouTube画面が開く（好きな数字に変更）
+
+// ===== 電卓 =====
+let expr = "";
+const disp = document.getElementById("disp");
+const keys = ["C","(",")","/","7","8","9","*","4","5","6","-","1","2","3","+","0",".","⌫","="];
+
+keys.forEach(k => {
+  const b = document.createElement("button");
+  b.textContent = k;
+  if ("/*-+=".includes(k)) b.className = "op";
+  if (["C","(",")"].includes(k)) b.className = "fn";
+  b.onclick = () => press(k);
+  document.getElementById("keys").appendChild(b);
+});
+
+function press(k) {
+  if (k === "C") expr = "";
+  else if (k === "⌫") expr = expr.slice(0, -1);
+  else if (k === "=") {
+    if (expr === SECRET) { openViewer(); expr = ""; }   // 秘密の数字
+    else expr = calc(expr);
+  } else expr += k;
+  disp.textContent = expr || "0";
+}
+
+function calc(s) {
+  if (!/^[0-9+\-*/.() ]+$/.test(s)) return "";
+  try { return String(Function('"use strict";return (' + s + ')')()); }
+  catch { return "Error"; }
+}
+
+// ===== YouTube =====
+const $ = id => document.getElementById(id);
+
+function openViewer() {
+  $("calc").style.display = "none";
+  $("viewer").style.display = "block";
+  document.title = "YouTube";
+}
+function closeViewer() {
+  $("player").src = "";
+  $("viewer").style.display = "none";
+  $("calc").style.display = "block";
+  document.title = "電卓";
+}
+$("back").onclick = closeViewer;
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeViewer(); });
+
+function getKey(force) {
+  let k = localStorage.getItem("yt_key");
+  if (!k || force) {
+    k = prompt("YouTube Data API v3 のキーを入力") || "";
+    localStorage.setItem("yt_key", k.trim());
+  }
+  return k.trim();
+}
+$("key").onclick = () => getKey(true);
+
+async function search() {
+  const key = getKey(false);
+  const q = $("q").value.trim();
+  if (!key || !q) return;
+  const url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=12"
+            + "&q=" + encodeURIComponent(q) + "&key=" + encodeURIComponent(key);
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.error) { alert("APIエラー: " + data.error.message); return; }
+  $("results").innerHTML = "";
+  data.items.forEach(it => {
+    const d = document.createElement("div");
+    d.className = "card";
+    const img = document.createElement("img");
+    img.src = it.snippet.thumbnails.medium.url;
+    const t = document.createElement("div");
+    t.textContent = it.snippet.title;   // textContentでXSS対策
+    d.append(img, t);
+    d.onclick = () => {
+      $("player").src = "https://www.youtube-nocookie.com/embed/" + it.id.videoId + "?autoplay=1";
+      window.scrollTo(0, 0);
+    };
+    $("results").appendChild(d);
+  });
+}
+$("go").onclick = search;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") search(); });
+</script>
+</body>
+</html>
