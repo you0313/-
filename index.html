@@ -19,6 +19,14 @@
   #results{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
   .card{cursor:pointer;font-size:.85rem}
   .card img{width:100%;border-radius:8px}
+  #info{margin:8px 0;text-align:left}
+  #info h2{font-size:1.1rem;margin:4px 0}
+  #info a{color:#6cb6ff}
+  .meta{color:#aaa;font-size:.85rem;line-height:1.6}
+  #info details{margin:8px 0;font-size:.85rem}
+  #desc{white-space:pre-wrap;word-break:break-word;color:#ccc}
+  .c{border-top:1px solid #333;padding:8px 0;font-size:.85rem;white-space:pre-wrap;word-break:break-word}
+  .c .au{color:#aaa;font-size:.8rem}
 </style>
 </head>
 <body>
@@ -37,6 +45,7 @@
   <button id="key">APIキー設定</button>
   <button id="prev" style="display:none">← 前の一覧</button>
   <iframe id="player" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen allow="autoplay; encrypted-media; picture-in-picture"></iframe>
+  <div id="info"></div>
   <div id="results"></div>
 </div>
 
@@ -144,6 +153,7 @@ async function pick(it) {
     if (it.kind === "video") {
       $("player").src = "https://www.youtube-nocookie.com/embed/" + it.id + "?autoplay=1";
       window.scrollTo(0, 0);
+      showInfo(it.id);
     } else if (it.kind === "playlist") {
       show(await loadPlaylist(it.id), true);
     } else if (it.kind === "channel") {
@@ -160,6 +170,90 @@ async function loadPlaylist(id) {
   return d.items
     .filter(x => x.snippet.resourceId && !/^(Private|Deleted) video$/.test(x.snippet.title))
     .map(x => ({ kind: "video", id: x.snippet.resourceId.videoId, title: x.snippet.title, thumb: thumbOf(x.snippet) }));
+}
+
+// ===== 動画の詳細とコメント =====
+const fmtDate = t => new Date(t).toLocaleString("ja-JP", { dateStyle: "medium", timeStyle: "short" });
+function fmtDur(iso) {
+  const m = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(iso || "");
+  if (!m) return "ライブ/不明";
+  const h = +m[1] || 0, mi = +m[2] || 0, se = +m[3] || 0;
+  const p = x => String(x).padStart(2, "0");
+  return h ? `${h}:${p(mi)}:${p(se)}` : `${mi}:${p(se)}`;
+}
+const num = x => x == null ? "非公開" : Number(x).toLocaleString("ja-JP");
+
+async function showInfo(id) {
+  const box = $("info");
+  box.textContent = "読み込み中…";
+  try {
+    const d = await api("videos", { part: "snippet,statistics,contentDetails", id });
+    const v = d.items[0];
+    if (!v) { box.textContent = "詳細を取得できませんでした"; return; }
+    const sn = v.snippet, st = v.statistics || {};
+    box.innerHTML = "";
+
+    const h = document.createElement("h2"); h.textContent = sn.title;
+
+    const m = document.createElement("div"); m.className = "meta";
+    const ch = document.createElement("a");
+    ch.href = "#"; ch.textContent = sn.channelTitle;
+    ch.onclick = e => { e.preventDefault(); pick({ kind: "channel", id: sn.channelId }); };
+    m.append(ch, ` ・ 投稿日 ${fmtDate(sn.publishedAt)} ・ 長さ ${fmtDur(v.contentDetails.duration)}`,
+      document.createElement("br"),
+      `再生 ${num(st.viewCount)}回 ・ 高評価 ${num(st.likeCount)} ・ コメント ${num(st.commentCount)}件`);
+
+    const det = document.createElement("details");
+    const sum = document.createElement("summary"); sum.textContent = "概要欄";
+    const desc = document.createElement("div"); desc.id = "desc"; desc.textContent = sn.description || "（なし）";
+    det.append(sum, desc);
+
+    const head = document.createElement("div"); head.className = "meta";
+    head.append("コメント　並び順：");
+    const sel = document.createElement("select"); sel.id = "corder";
+    sel.innerHTML = '<option value="relevance">関連順</option><option value="time">新着順</option>';
+    sel.onchange = () => loadComments(id, false);
+    head.append(sel);
+
+    const list = document.createElement("div"); list.id = "comments";
+    const more = document.createElement("button"); more.id = "moreC"; more.textContent = "もっと見る";
+    more.style.display = "none"; more.onclick = () => loadComments(id, true);
+
+    box.append(h, m, det, head, list, more);
+    loadComments(id, false);
+  } catch (e) { box.textContent = "詳細エラー: " + e.message; }
+}
+
+let cToken = null, cVid = null;
+async function loadComments(id, more) {
+  const list = $("comments");
+  if (!list) return;
+  if (!more) { list.textContent = "読み込み中…"; cToken = null; }
+  cVid = id;
+  try {
+    const p = { part: "snippet", videoId: id, maxResults: 20, textFormat: "plainText",
+                order: $("corder").value };
+    if (more && cToken) p.pageToken = cToken;
+    const d = await api("commentThreads", p);
+    if (cVid !== id) return;                       // 別の動画に切り替わっていたら中止
+    if (!more) list.innerHTML = "";
+    if (!d.items.length && !more) list.textContent = "コメントはありません";
+    d.items.forEach(t => {
+      const c = t.snippet.topLevelComment.snippet;
+      const div = document.createElement("div"); div.className = "c";
+      const au = document.createElement("div"); au.className = "au";
+      au.textContent = `${c.authorDisplayName} ・ ${fmtDate(c.publishedAt)} ・ 👍${num(c.likeCount)}`
+                     + (t.snippet.totalReplyCount ? ` ・ 返信${t.snippet.totalReplyCount}件` : "");
+      const tx = document.createElement("div"); tx.textContent = c.textDisplay;   // 表示のみ
+      div.append(au, tx);
+      list.appendChild(div);
+    });
+    cToken = d.nextPageToken || null;
+    $("moreC").style.display = cToken ? "inline-block" : "none";
+  } catch (e) {
+    list.textContent = /disabled/i.test(e.message) ? "この動画はコメントが無効です" : "コメントを取得できません: " + e.message;
+    $("moreC").style.display = "none";
+  }
 }
 
 // 検索（動画・チャンネル・再生リスト）
